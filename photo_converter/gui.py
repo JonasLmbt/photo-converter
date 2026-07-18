@@ -61,8 +61,11 @@ class PhotoConverterApp(tk.Tk):
                       activeforeground=TEXT_FG, font=FONT_MAIN, padx=8).pack(side='right', padx=(4, 0))
             return var
 
-        self.src_var = folder_row('Source:', 0, r'C:\Users\Jonas\Pictures\iCloud Photos\Photos', self._browse_src)
-        self.dst_var = folder_row('Destination:', 1, r'C:\Users\Jonas\Pictures\Photos_Sorted', self._browse_dst)
+        pictures = Path.home() / 'Pictures'
+        default_src = pictures / 'iCloud Photos' / 'Photos'   # standard iCloud for Windows location
+        default_dst = pictures / 'Photos_Sorted'
+        self.src_var = folder_row('Source:', 0, str(default_src), self._browse_src)
+        self.dst_var = folder_row('Destination:', 1, str(default_dst), self._browse_dst)
 
         # Folder structure
         row(cfg, 'Structure:', 2)
