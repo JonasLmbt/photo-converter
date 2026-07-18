@@ -116,6 +116,7 @@ class PhotoConverterApp(tk.Tk):
         self.log.tag_config('err',  foreground=ERROR_CLR)
         self.log.tag_config('warn', foreground=WARN_CLR)
         self.log.tag_config('info', foreground=MUTED_FG)
+        self.log.tag_config('time', foreground=MUTED_FG)
 
         # Buttons
         btn_f = tk.Frame(self, bg=DARK_BG)
@@ -148,8 +149,10 @@ class PhotoConverterApp(tk.Tk):
         d = filedialog.askdirectory(title='Choose destination folder')
         if d: self.dst_var.set(d)
 
-    def _log(self, msg, tag=''):
+    def _log(self, msg, tag='', timestamp=True):
         self.log.config(state='normal')
+        if timestamp:
+            self.log.insert('end', f'[{datetime.now():%H:%M:%S}] ', 'time')
         self.log.insert('end', msg + '\n', tag)
         self.log.see('end')
         self.log.config(state='disabled')
@@ -249,8 +252,9 @@ class PhotoConverterApp(tk.Tk):
             self._log(outcome.message, outcome.tag)
 
         total_skipped = counts['exists'] + counts['online'] + counts['noffmpeg']
+        self._log('', timestamp=False)  # blank spacer line
         self._log(
-            f'\n{"=" * 50}\n'
+            f'{"=" * 50}\n'
             f'Done!  OK: {counts["ok"]}  |  Errors: {counts["error"]}  |  Skipped: {total_skipped}\n'
             f'  - already existed:          {counts["exists"]}\n'
             f'  - not downloaded (iCloud):  {counts["online"]}\n'
