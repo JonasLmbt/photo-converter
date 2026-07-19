@@ -141,19 +141,35 @@ def ffmpeg_available() -> bool:
         return False
 
 
+def _ffmpeg_error(stderr: str) -> str:
+    """Extracts the most meaningful line from ffmpeg's stderr for the log.
+
+    ffmpeg prints its version banner and build flags first, so the raw tail is
+    noisy. We pick the last line that looks like an actual error message.
+    """
+    lines = [ln.strip() for ln in (stderr or '').splitlines() if ln.strip()]
+    keywords = ('error', 'invalid', 'could not', 'no such', 'unable',
+                'failed', 'permission', 'not contain', 'moov atom')
+    for ln in reversed(lines):
+        if any(k in ln.lower() for k in keywords):
+            return ln
+    return lines[-1] if lines else 'ffmpeg failed with no output'
+
+
 def convert_video_to_mp4(src: Path, dst: Path):
-    """Converts a video to MP4 via ffmpeg."""
+    """Converts a video to MP4 via ffmpeg. Raises RuntimeError with a clean,
+    single-line message if ffmpeg fails."""
     result = subprocess.run(
         ['ffmpeg', '-i', str(src), '-c:v', 'libx264', '-c:a', 'aac',
          '-movflags', '+faststart', '-y', str(dst)],
         capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(result.stderr[-500:])
+        raise RuntimeError(_ffmpeg_error(result.stderr))
 
 
 # --- Step 4: process one file end-to-end (GUI-independent) --------------------
 
-# category: 'ok' | 'exists' | 'online' | 'noffmpeg' | 'error'
+# category: 'ok' | 'exists' | 'online' | 'noffmpeg' | 'broken' | 'error'
 # tag:      log colour tag ('ok' | 'warn' | 'info' | 'err')
 # no_date:  True if the capture date had to fall back to the file timestamp
 Outcome = namedtuple('Outcome', 'category message tag no_date')
@@ -174,6 +190,13 @@ def process_file(fp: Path, dst: Path, structure: str, skip_existing: bool,
         return Outcome('online', f'SKIP (not downloaded)  {fp.name}', 'warn', False)
 
     try:
+        # Empty / dataless file -> nothing to convert, skip cleanly
+        try:
+            if fp.stat().st_size == 0:
+                return Outcome('broken', f'SKIP (empty file)  {fp.name}', 'warn', False)
+        except OSError:
+            pass
+
         # Non-MP4 video without ffmpeg cannot be converted -> skip
         if ext in VIDEO_CONV_EXTENSIONS and not ffmpeg_ok:
             return Outcome('noffmpeg', f'SKIP (no ffmpeg)  {fp.name}', 'info', False)
@@ -192,7 +215,16 @@ def process_file(fp: Path, dst: Path, structure: str, skip_existing: bool,
         if ext in MP4_EXTENSIONS:                 # MP4/M4V -> copy
             shutil.copy2(fp, out); kind = ''
         elif ext in VIDEO_CONV_EXTENSIONS:        # MOV/AVI/... -> MP4
-            convert_video_to_mp4(fp, out); kind = '  [->MP4]'
+            try:
+                convert_video_to_mp4(fp, out)
+            except Exception as e:
+                # broken/unreadable source video -> skip cleanly, not a hard error
+                try:
+                    out.unlink(missing_ok=True)  # remove any partial output
+                except OSError:
+                    pass
+                return Outcome('broken', f'SKIP (broken video)  {fp.name}:  {e}', 'warn', False)
+            kind = '  [->MP4]'
         elif ext in JPG_EXTENSIONS:               # JPG -> copy
             shutil.copy2(fp, out); kind = ''
         elif ext in RAW_EXTENSIONS:               # RAW -> JPG

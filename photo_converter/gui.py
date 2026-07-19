@@ -237,7 +237,7 @@ class PhotoConverterApp(tk.Tk):
         self._log(f'Found: {total} files\n', 'info')
         self.progress.config(maximum=max(total, 1))
 
-        counts = {'ok': 0, 'exists': 0, 'online': 0, 'noffmpeg': 0, 'error': 0}
+        counts = {'ok': 0, 'exists': 0, 'online': 0, 'noffmpeg': 0, 'broken': 0, 'error': 0}
         no_date = 0
 
         for i, fp in enumerate(all_files):
@@ -254,13 +254,15 @@ class PhotoConverterApp(tk.Tk):
                 no_date += 1
             self._log(outcome.message, outcome.tag)
 
-        total_skipped = counts['exists'] + counts['online'] + counts['noffmpeg']
+        total_skipped = (counts['exists'] + counts['online'] +
+                         counts['noffmpeg'] + counts['broken'])
         self._log('', timestamp=False)  # blank spacer line
         self._log(
             f'{"=" * 50}\n'
             f'Done!  OK: {counts["ok"]}  |  Errors: {counts["error"]}  |  Skipped: {total_skipped}\n'
             f'  - already existed:          {counts["exists"]}\n'
             f'  - not downloaded (iCloud):  {counts["online"]}\n'
+            f'  - broken / empty:           {counts["broken"]}\n'
             f'  - no ffmpeg:                {counts["noffmpeg"]}\n'
             f'  - no EXIF date (file date): {no_date}\n'
             f'Destination: {dst}',
