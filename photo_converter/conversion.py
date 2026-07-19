@@ -3,6 +3,7 @@ each media file. This module is GUI-free and can be tested on its own.
 """
 
 import os
+import re
 import stat
 import shutil
 import logging
@@ -44,11 +45,47 @@ def is_online_only(filepath: Path) -> bool:
     return bool(attrs & (offline | recall))
 
 
-def get_exif_date(filepath: Path):
-    """Reads the capture date from EXIF; falls back to the file's modified time.
+# Date patterns found in common file names (WhatsApp, Screenshot, Pixel, Signal,
+# IMG_/VID_ with a date, ...). Most specific first.
+_DATE_TIME_PATTERNS = [
+    # 2026-03-01 [ at / _ / - / T ] 17.33.42  (WhatsApp, Signal, Screenshot)
+    re.compile(r'(20\d{2})[-_.](\d{2})[-_.](\d{2})[^\d]{1,5}(\d{2})[.\-:_ ](\d{2})[.\-:_ ](\d{2})'),
+    # 20260301 [ _ / - / T ] 173342 (optional trailing ms)  (PXL_, IMG_, VID_)
+    re.compile(r'(?<!\d)(20\d{2})(\d{2})(\d{2})[^\d]{1,3}(\d{2})(\d{2})(\d{2})'),
+]
+_DATE_ONLY_PATTERNS = [
+    re.compile(r'(20\d{2})[-_.](\d{2})[-_.](\d{2})'),         # 2026-03-01
+    re.compile(r'(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)'),      # 20260301
+]
 
-    Returns a tuple (date, from_exif) where from_exif is True if the date came
-    from EXIF metadata and False if the file's timestamp was used instead.
+
+def date_from_filename(name: str):
+    """Tries to parse a capture date/time out of a file name. Returns a datetime
+    or None. Used as a fallback when a file has no EXIF date."""
+    for pat in _DATE_TIME_PATTERNS:
+        m = pat.search(name)
+        if m:
+            y, mo, d, h, mi, s = (int(x) for x in m.groups())
+            try:
+                return datetime(y, mo, d, h, mi, s)
+            except ValueError:
+                pass
+    for pat in _DATE_ONLY_PATTERNS:
+        m = pat.search(name)
+        if m:
+            y, mo, d = (int(x) for x in m.groups())
+            try:
+                return datetime(y, mo, d, 12, 0, 0)  # noon: time unknown
+            except ValueError:
+                pass
+    return None
+
+
+def get_exif_date(filepath: Path):
+    """Determines the capture date. Returns (date, source) where source is:
+      'exif'     - read from EXIF metadata
+      'filename' - parsed from the file name (no EXIF date present)
+      'file'     - fell back to the file's modified time
     """
     try:
         import exifread
@@ -56,10 +93,15 @@ def get_exif_date(filepath: Path):
             tags = exifread.process_file(f, stop_tag='EXIF DateTimeOriginal', details=False)
         for tag in ('EXIF DateTimeOriginal', 'EXIF DateTimeDigitized', 'Image DateTime'):
             if tag in tags:
-                return datetime.strptime(str(tags[tag]), '%Y:%m:%d %H:%M:%S'), True
+                return datetime.strptime(str(tags[tag]), '%Y:%m:%d %H:%M:%S'), 'exif'
     except Exception:
         pass
-    return datetime.fromtimestamp(filepath.stat().st_mtime), False
+    # Fallback 1: a date embedded in the file name
+    from_name = date_from_filename(filepath.name)
+    if from_name is not None:
+        return from_name, 'filename'
+    # Fallback 2: file modified time
+    return datetime.fromtimestamp(filepath.stat().st_mtime), 'file'
 
 
 # --- Step 2: decide the destination path -------------------------------------
@@ -169,10 +211,12 @@ def convert_video_to_mp4(src: Path, dst: Path):
 
 # --- Step 4: process one file end-to-end (GUI-independent) --------------------
 
-# category: 'ok' | 'exists' | 'online' | 'noffmpeg' | 'broken' | 'error'
-# tag:      log colour tag ('ok' | 'warn' | 'info' | 'err')
-# no_date:  True if the capture date had to fall back to the file timestamp
-Outcome = namedtuple('Outcome', 'category message tag no_date')
+# category:  'ok' | 'exists' | 'online' | 'noffmpeg' | 'broken' | 'error'
+# tag:       log colour tag ('ok' | 'warn' | 'info' | 'err')
+# no_date:   True if the date fell back to the file timestamp (no EXIF, no name)
+# from_name: True if the date was parsed from the file name
+Outcome = namedtuple('Outcome', 'category message tag no_date from_name',
+                     defaults=(False, False))
 
 
 def process_file(fp: Path, dst: Path, structure: str, skip_existing: bool,
@@ -201,7 +245,7 @@ def process_file(fp: Path, dst: Path, structure: str, skip_existing: bool,
         if ext in VIDEO_CONV_EXTENSIONS and not ffmpeg_ok:
             return Outcome('noffmpeg', f'SKIP (no ffmpeg)  {fp.name}', 'info', False)
 
-        date, from_exif = get_exif_date(fp)
+        date, datesrc = get_exif_date(fp)
 
         is_video = ext in MP4_EXTENSIONS or ext in VIDEO_CONV_EXTENSIONS
         base_ext = '.mp4' if is_video else '.jpg'
@@ -234,9 +278,21 @@ def process_file(fp: Path, dst: Path, structure: str, skip_existing: bool,
 
         set_file_date(out, date)
         stamp = date.strftime('%Y-%m-%d %H:%M:%S')
-        note = '' if from_exif else '   [no EXIF date -> file date]'
+        if datesrc == 'exif':
+            note, tag = '', 'ok'
+        elif datesrc == 'filename':
+            note, tag = '   [date from filename]', 'ok'
+        else:  # 'file'
+            note, tag = '   [no EXIF date -> file date]', 'warn'
         msg = f'OK  {fp.name}  ->  {out.relative_to(dst)}   {stamp}{kind}{note}'
-        return Outcome('ok', msg, 'ok' if from_exif else 'warn', not from_exif)
+        return Outcome('ok', msg, tag,
+                       no_date=(datesrc == 'file'), from_name=(datesrc == 'filename'))
 
+    except OSError as e:
+        # Unreadable source: almost always an iCloud/OneDrive placeholder that
+        # is not downloaded locally ([Errno 22] when the provider can't fetch it).
+        if is_online_only(fp):
+            return Outcome('online', f'SKIP (not downloaded)  {fp.name}', 'warn')
+        return Outcome('broken', f'SKIP (unreadable file)  {fp.name}:  {e}', 'warn')
     except Exception as e:
-        return Outcome('error', f'ERROR  {fp.name}:  {e}', 'err', False)
+        return Outcome('error', f'ERROR  {fp.name}:  {e}', 'err')

@@ -239,6 +239,7 @@ class PhotoConverterApp(tk.Tk):
 
         counts = {'ok': 0, 'exists': 0, 'online': 0, 'noffmpeg': 0, 'broken': 0, 'error': 0}
         no_date = 0
+        from_name = 0
 
         for i, fp in enumerate(all_files):
             if not self._running:
@@ -252,6 +253,8 @@ class PhotoConverterApp(tk.Tk):
             counts[outcome.category] += 1
             if outcome.no_date:
                 no_date += 1
+            if outcome.from_name:
+                from_name += 1
             self._log(outcome.message, outcome.tag)
 
         total_skipped = (counts['exists'] + counts['online'] +
@@ -264,6 +267,7 @@ class PhotoConverterApp(tk.Tk):
             f'  - not downloaded (iCloud):  {counts["online"]}\n'
             f'  - broken / empty:           {counts["broken"]}\n'
             f'  - no ffmpeg:                {counts["noffmpeg"]}\n'
+            f'  - date from filename:       {from_name}\n'
             f'  - no EXIF date (file date): {no_date}\n'
             f'Destination: {dst}',
             'info')
